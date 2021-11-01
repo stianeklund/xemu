@@ -64,7 +64,7 @@ struct decal_shader *create_decal_shader(enum SHADER_TYPE type)
     s->time = 0;
 
     const char *vert_src =
-        "#version 150 core\n"
+        "#version 400 core\n"
         "uniform bool in_FlipY;\n"
         "uniform vec4 in_ScaleOffset;\n"
         "uniform vec4 in_TexScaleOffset;\n"
@@ -81,7 +81,7 @@ struct decal_shader *create_decal_shader(enum SHADER_TYPE type)
     assert(vert != 0);
 
     const char *image_frag_src =
-        "#version 150 core\n"
+        "#version 400 core\n"
         "uniform sampler2D tex;\n"
         "in  vec2 Texcoord;\n"
         "out vec4 out_Color;\n"
@@ -108,6 +108,29 @@ struct decal_shader *create_decal_shader(enum SHADER_TYPE type)
         "    out_Color.rgba = gamma(texture(tex, Texcoord));\n"
         "}\n";
 
+    const char *depth_image_frag_src =
+        "#version 400 core\n"
+        "uniform sampler2D tex;\n"
+        "in  vec2 Texcoord;\n"
+        "out vec4 out_Color;\n"
+        "void main() {\n"
+        "    ivec2 icoord = ivec2(Texcoord*textureSize(tex, 0));\n"
+        "    gl_FragDepth = texelFetch(tex, icoord, 0).r;\n"
+        "    out_Color.rgba = vec4(1);\n"
+        "}\n";
+
+    const char *stencil_image_frag_src =
+        "#version 400 core\n"
+        "uniform usampler2D tex;\n"
+        "uniform uint stencil_bit;\n"
+        "in  vec2 Texcoord;\n"
+        "out vec4 out_Color;\n"
+        "void main() {\n"
+        "    ivec2 icoord = ivec2(Texcoord*textureSize(tex, 0));\n"
+        "    uint stencil_val = texelFetch(tex, icoord, 0).r;\n"
+        "    if ((stencil_val & (1u << stencil_bit)) == 0u) discard;\n"
+        "    out_Color.rgba = vec4(1);\n"
+        "}\n";
     // Simple 2-color decal shader
     // - in_ColorFill is first pass
     // - Red channel of the texture is used as primary color, mixed with 1-Red for
@@ -115,7 +138,7 @@ struct decal_shader *create_decal_shader(enum SHADER_TYPE type)
     // - Blue is a lazy alpha removal for now
     // - Alpha channel passed through
     const char *mask_frag_src =
-        "#version 150 core\n"
+        "#version 400 core\n"
         "uniform sampler2D tex;\n"
         "uniform vec4 in_ColorPrimary;\n"
         "uniform vec4 in_ColorSecondary;\n"
@@ -136,6 +159,10 @@ struct decal_shader *create_decal_shader(enum SHADER_TYPE type)
         frag_src = image_frag_src;
     } else if (type == SHADER_TYPE_BLIT_GAMMA) {
         frag_src = image_gamma_frag_src;
+    } else if (type == SHADER_TYPE_BLIT_DEPTH) {
+        frag_src = depth_image_frag_src;
+    } else if (type == SHADER_TYPE_BLIT_STENCIL) {
+        frag_src = stencil_image_frag_src;
     } else if (type == SHADER_TYPE_LOGO) {
         frag_src = xemu_logo_frag_src;
     } else {
@@ -170,6 +197,7 @@ struct decal_shader *create_decal_shader(enum SHADER_TYPE type)
         snprintf(name, sizeof(name), "palette[%d]", i);
         s->palette_loc[i] = glGetUniformLocation(s->prog, name);
     }
+    s->StencilBit_loc     = glGetUniformLocation(s->prog, "stencil_bit");
 
     // Create a vertex array object
     glGenVertexArrays(1, &s->vao);

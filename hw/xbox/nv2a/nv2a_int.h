@@ -50,6 +50,7 @@
 #include "debug.h"
 #include "shaders.h"
 #include "nv2a_regs.h"
+#include "ui/xemu-shaders.h"
 
 #define GET_MASK(v, mask) (((v) & (mask)) >> ctz32(mask))
 
@@ -271,6 +272,9 @@ typedef struct PGRAPHState {
         GLint palette_loc[256];
     } disp_rndr;
 
+    struct decal_shader *blit_shader, *depth_blit_shader, *stencil_blit_shader;
+    GLuint scale_fbo;
+
     /* subchannels state we're not sure the location of... */
     ContextSurfaces2DState context_surfaces_2d;
     ImageBlitState image_blit;
@@ -398,6 +402,7 @@ typedef struct PGRAPHState {
 
     unsigned int surface_scale_factor;
     uint8_t *scale_buf;
+    bool clearing;
 } PGRAPHState;
 
 typedef struct NV2AState {
@@ -494,6 +499,7 @@ typedef struct NV2ABlockInfo {
 extern const NV2ABlockInfo blocktable[NV_NUM_BLOCKS];
 
 extern GloContext *g_nv2a_context_render;
+extern GloContext *g_nv2a_context_scale;
 extern GloContext *g_nv2a_context_display;
 
 void nv2a_update_irq(NV2AState *d);
