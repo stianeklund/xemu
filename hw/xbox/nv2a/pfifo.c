@@ -80,6 +80,10 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
         nv2a_update_irq(d);
         break;
     default:
+        if (addr == NV_PFIFO_CACHE1_DMA_GET) {
+            fprintf(stderr, "NV2A: PFIFO MMIO write DMA_GET = 0x%08" PRIx64 " (was 0x%08x)\n",
+                    val, d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET]);
+        }
         d->pfifo.regs[addr] = val;
         break;
     }
@@ -177,29 +181,33 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
         RAMHTEntry entry = ramht_lookup(d, parameter);
         assert(entry.valid);
         // assert(entry.channel_id == state->channel_id);
-        assert(entry.engine == ENGINE_GRAPHICS);
 
         /* the engine is bound to the subchannel */
         assert(subchannel < 8);
         SET_MASK(*engine_reg, 3 << (4*subchannel), entry.engine);
         SET_MASK(*pull1, NV_PFIFO_CACHE1_PULL1_ENGINE, entry.engine);
 
-        // TODO: this is fucked
-        qemu_mutex_unlock(&d->pfifo.lock);
-        qemu_mutex_lock(&d->pgraph.lock);
+        if (entry.engine == ENGINE_GRAPHICS) {
+            // TODO: this is fucked
+            qemu_mutex_unlock(&d->pfifo.lock);
+            qemu_mutex_lock(&d->pgraph.lock);
 
-        // Switch contexts if necessary
-        if (can_fifo_access(d)) {
-            pgraph_context_switch(d, entry.channel_id);
-            if (!d->pgraph.waiting_for_context_switch) {
-                num_proc =
-                    pgraph_method(d, subchannel, 0, entry.instance, parameters,
-                                  num_words_available, max_lookahead_words, inc);
+            // Switch contexts if necessary
+            if (can_fifo_access(d)) {
+                pgraph_context_switch(d, entry.channel_id);
+                if (!d->pgraph.waiting_for_context_switch) {
+                    num_proc =
+                        pgraph_method(d, subchannel, 0, entry.instance, parameters,
+                                      num_words_available, max_lookahead_words, inc);
+                }
             }
-        }
 
-        qemu_mutex_unlock(&d->pgraph.lock);
-        qemu_mutex_lock(&d->pfifo.lock);
+            qemu_mutex_unlock(&d->pgraph.lock);
+            qemu_mutex_lock(&d->pfifo.lock);
+        } else {
+            /* ENGINE_SOFTWARE or ENGINE_DVD — just bind it, no pgraph call */
+            num_proc = 1;
+        }
 
     } else if (method >= 0x100) {
         // method passed to engine
@@ -209,28 +217,47 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
         if (method >= 0x180 && method < 0x200) {
             //bql_lock();
             RAMHTEntry entry = ramht_lookup(d, parameter);
-            assert(entry.valid);
+            if (!entry.valid) {
+                fprintf(stderr, "NV2A: Method 0x%X references invalid object 0x%X\n", method, parameter);
+                return -1;
+            }
             // assert(entry.channel_id == state->channel_id);
             parameter = entry.instance;
             //bql_unlock();
         }
 
         enum FIFOEngine engine = GET_MASK(*engine_reg, 3 << (4*subchannel));
-        assert(engine == ENGINE_GRAPHICS);
         SET_MASK(*pull1, NV_PFIFO_CACHE1_PULL1_ENGINE, engine);
 
-        // TODO: this is fucked
-        qemu_mutex_unlock(&d->pfifo.lock);
-        qemu_mutex_lock(&d->pgraph.lock);
+        if (engine == ENGINE_SOFTWARE) {
+            /* Real hardware raises CACHE_ERROR so the kernel handles the
+             * method in software.  Fire the interrupt and stall the puller
+             * until the kernel clears it. */
+            qemu_mutex_unlock(&d->pfifo.lock);
+            bql_lock();
+            d->pfifo.pending_interrupts |= NV_PFIFO_INTR_0_CACHE_ERROR;
+            nv2a_update_irq(d);
+            bql_unlock();
+            qemu_mutex_lock(&d->pfifo.lock);
+            num_proc = 1;
+        } else if (engine == ENGINE_GRAPHICS) {
+            // TODO: this is fucked
+            qemu_mutex_unlock(&d->pfifo.lock);
+            qemu_mutex_lock(&d->pgraph.lock);
 
-        if (can_fifo_access(d)) {
-            num_proc =
-                pgraph_method(d, subchannel, method, parameter, parameters,
-                              num_words_available, max_lookahead_words, inc);
+            if (can_fifo_access(d)) {
+                num_proc =
+                    pgraph_method(d, subchannel, method, parameter, parameters,
+                                  num_words_available, max_lookahead_words, inc);
+            }
+
+            qemu_mutex_unlock(&d->pgraph.lock);
+            qemu_mutex_lock(&d->pfifo.lock);
+        } else {
+            fprintf(stderr, "NV2A: PFIFO unsupported engine %d for method 0x%x on subchannel %d\n",
+                    engine, method, subchannel);
+            num_proc = 1;
         }
-
-        qemu_mutex_unlock(&d->pgraph.lock);
-        qemu_mutex_lock(&d->pfifo.lock);
     } else {
         assert(false);
     }
@@ -280,9 +307,10 @@ static void pfifo_run_pusher(NV2AState *d)
     assert(GET_MASK(*push1, NV_PFIFO_CACHE1_PUSH1_MODE)
             == NV_PFIFO_CACHE1_PUSH1_MODE_DMA);
 
-    /* We're running so there should be no pending errors... */
-    assert(GET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR)
-            == NV_PFIFO_CACHE1_DMA_STATE_ERROR_NONE);
+    if (GET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR)
+            != NV_PFIFO_CACHE1_DMA_STATE_ERROR_NONE) {
+        return;
+    }
 
     hwaddr dma_instance =
         GET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_DMA_INSTANCE],
@@ -296,7 +324,8 @@ static void pfifo_run_pusher(NV2AState *d)
         uint32_t dma_put_v = *dma_put;
         if (dma_get_v == dma_put_v) break;
         if (dma_get_v >= dma_len) {
-            assert(false);
+            fprintf(stderr, "NV2A: PFIFO DMA protection fault: get=0x%x len=0x%" HWADDR_PRIx "\n",
+                    dma_get_v, dma_len);
             SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
                      NV_PFIFO_CACHE1_DMA_STATE_ERROR_PROTECTION);
             break;
@@ -364,12 +393,32 @@ static void pfifo_run_pusher(NV2AState *d)
                     dma_get_v;
                 dma_get_v = word & 0x1fffffff;
                 NV2A_DPRINTF("pb OLD_JMP 0x%x\n", dma_get_v);
+                if (dma_get_v >= dma_len) {
+                    fprintf(stderr, "NV2A: PFIFO OLD_JMP to out-of-bounds 0x%x (word=0x%08x from get=0x%x, len=0x%" HWADDR_PRIx ")\n",
+                            dma_get_v, word,
+                            d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET_JMP_SHADOW],
+                            dma_len);
+                    dma_get_v = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET_JMP_SHADOW];
+                    SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
+                             NV_PFIFO_CACHE1_DMA_STATE_ERROR_PROTECTION);
+                    break;
+                }
             } else if ((word & 3) == 1) {
                 /* jump */
                 d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET_JMP_SHADOW] =
                     dma_get_v;
                 dma_get_v = word & 0xfffffffc;
                 NV2A_DPRINTF("pb JMP 0x%x\n", dma_get_v);
+                if (dma_get_v >= dma_len) {
+                    fprintf(stderr, "NV2A: PFIFO JMP to out-of-bounds 0x%x (word=0x%08x from get=0x%x, len=0x%" HWADDR_PRIx ")\n",
+                            dma_get_v, word,
+                            d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET_JMP_SHADOW],
+                            dma_len);
+                    dma_get_v = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET_JMP_SHADOW];
+                    SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
+                             NV_PFIFO_CACHE1_DMA_STATE_ERROR_PROTECTION);
+                    break;
+                }
             } else if ((word & 3) == 2) {
                 /* call */
                 if (subroutine_state) {
@@ -382,6 +431,16 @@ static void pfifo_run_pusher(NV2AState *d)
                              NV_PFIFO_CACHE1_DMA_SUBROUTINE_STATE, 1);
                     dma_get_v = word & 0xfffffffc;
                     NV2A_DPRINTF("pb CALL 0x%x\n", dma_get_v);
+                    if (dma_get_v >= dma_len) {
+                        fprintf(stderr, "NV2A: PFIFO CALL to out-of-bounds 0x%x (word=0x%08x, len=0x%" HWADDR_PRIx ")\n",
+                                dma_get_v, word, dma_len);
+                        dma_get_v = *dma_subroutine & 0xfffffffc;
+                        SET_MASK(*dma_subroutine,
+                                 NV_PFIFO_CACHE1_DMA_SUBROUTINE_STATE, 0);
+                        SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
+                                 NV_PFIFO_CACHE1_DMA_STATE_ERROR_PROTECTION);
+                        break;
+                    }
                 }
             } else if (word == 0x00020000) {
                 /* return */
@@ -418,12 +477,11 @@ static void pfifo_run_pusher(NV2AState *d)
                          NV_PFIFO_CACHE1_DMA_STATE_METHOD_TYPE_NON_INC);
                 *dma_dcount = 0;
             } else {
-                NV2A_DPRINTF("pb reserved cmd 0x%x - 0x%x\n",
-                             dma_get_v, word);
+                fprintf(stderr, "NV2A: PFIFO reserved cmd at dma_get=0x%x word=0x%08x\n",
+                        dma_get_v, word);
                 SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
                          NV_PFIFO_CACHE1_DMA_STATE_ERROR_RESERVED_CMD);
-                // break;
-                assert(false);
+                break;
             }
         }
 
@@ -439,13 +497,16 @@ static void pfifo_run_pusher(NV2AState *d)
 
     uint32_t error = GET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR);
     if (error) {
-        NV2A_DPRINTF("pb error: %d\n", error);
-        assert(false);
+        fprintf(stderr, "NV2A: PFIFO DMA pusher error %d, suspending and firing IRQ\n", error);
 
         SET_MASK(*dma_push, NV_PFIFO_CACHE1_DMA_PUSH_STATUS, 1); /* suspended */
 
-        // d->pfifo.pending_interrupts |= NV_PFIFO_INTR_0_DMA_PUSHER;
-        // nv2a_update_irq(d);
+        d->pfifo.pending_interrupts |= NV_PFIFO_INTR_0_DMA_PUSHER;
+        qemu_mutex_unlock(&d->pfifo.lock);
+        bql_lock();
+        nv2a_update_irq(d);
+        bql_unlock();
+        qemu_mutex_lock(&d->pfifo.lock);
     }
 }
 
