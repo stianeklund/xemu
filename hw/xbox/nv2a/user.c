@@ -94,6 +94,8 @@ void user_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
                 d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT] = val;
                 break;
             case NV_USER_DMA_GET:
+                fprintf(stderr, "NV2A: USER write DMA_GET = 0x%08" PRIx64 " (was 0x%08x)\n",
+                        val, d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET]);
                 d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET] = val;
                 break;
             case NV_USER_REF:
