@@ -81,8 +81,11 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
         break;
     default:
         if (addr == NV_PFIFO_CACHE1_DMA_GET) {
-            fprintf(stderr, "NV2A: PFIFO MMIO write DMA_GET = 0x%08" PRIx64 " (was 0x%08x)\n",
-                    val, d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET]);
+            static int mmio_get_count;
+            if (mmio_get_count++ < 5) {
+                fprintf(stderr, "NV2A: PFIFO MMIO write DMA_GET = 0x%08" PRIx64 " (was 0x%08x)\n",
+                        val, d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET]);
+            }
         }
         d->pfifo.regs[addr] = val;
         break;
@@ -324,8 +327,11 @@ static void pfifo_run_pusher(NV2AState *d)
         uint32_t dma_put_v = *dma_put;
         if (dma_get_v == dma_put_v) break;
         if (dma_get_v >= dma_len) {
-            fprintf(stderr, "NV2A: PFIFO DMA protection fault: get=0x%x len=0x%" HWADDR_PRIx "\n",
-                    dma_get_v, dma_len);
+            static int prot_count;
+            if (prot_count++ < 5) {
+                fprintf(stderr, "NV2A: PFIFO DMA protection fault: get=0x%x len=0x%" HWADDR_PRIx "\n",
+                        dma_get_v, dma_len);
+            }
             SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
                      NV_PFIFO_CACHE1_DMA_STATE_ERROR_PROTECTION);
             break;
@@ -477,8 +483,13 @@ static void pfifo_run_pusher(NV2AState *d)
                          NV_PFIFO_CACHE1_DMA_STATE_METHOD_TYPE_NON_INC);
                 *dma_dcount = 0;
             } else {
-                fprintf(stderr, "NV2A: PFIFO reserved cmd at dma_get=0x%x word=0x%08x\n",
-                        dma_get_v, word);
+                {
+                    static int rsvd_count;
+                    if (rsvd_count++ < 5) {
+                        fprintf(stderr, "NV2A: PFIFO reserved cmd at dma_get=0x%x word=0x%08x\n",
+                                dma_get_v, word);
+                    }
+                }
                 SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
                          NV_PFIFO_CACHE1_DMA_STATE_ERROR_RESERVED_CMD);
                 break;
@@ -497,7 +508,12 @@ static void pfifo_run_pusher(NV2AState *d)
 
     uint32_t error = GET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR);
     if (error) {
-        fprintf(stderr, "NV2A: PFIFO DMA pusher error %d, suspending and firing IRQ\n", error);
+        {
+            static int pusher_err_count;
+            if (pusher_err_count++ < 5) {
+                fprintf(stderr, "NV2A: PFIFO DMA pusher error %d, suspending and firing IRQ\n", error);
+            }
+        }
 
         SET_MASK(*dma_push, NV_PFIFO_CACHE1_DMA_PUSH_STATUS, 1); /* suspended */
 
