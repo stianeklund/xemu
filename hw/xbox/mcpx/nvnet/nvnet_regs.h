@@ -152,6 +152,8 @@
 #  define NVNET_MII_STATUS_LINKCHANGE              0x00000008
 #define NVNET_UNKNOWN_SETUP_REG4                 0x184
 #  define NVNET_UNKNOWN_SETUP_REG4_VAL             8
+#define NVNET_MII_MASK                           NVNET_UNKNOWN_SETUP_REG4
+#  define NVNET_MII_MASK_LINKCHANGE                NVNET_MII_STATUS_LINKCHANGE
 #define NVNET_ADAPTER_CONTROL                    0x188
 #  define NVNET_ADAPTER_CONTROL_START              0x00000002
 #  define NVNET_ADAPTER_CONTROL_LINKUP             0x00000004
