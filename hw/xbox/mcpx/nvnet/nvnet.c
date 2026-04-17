@@ -251,9 +251,13 @@ static void set_intr_status(NvNetState *s, uint32_t status)
 
 static void set_mii_intr_status(NvNetState *s, uint32_t status)
 {
+    uint32_t mii_mask = get_reg(s, NVNET_MII_MASK);
+
     or_reg(s, NVNET_MII_STATUS, status);
-    set_intr_status(s, NVNET_IRQ_STATUS_MIIEVENT);
-    // FIXME: MII status mask?
+
+    if (mii_mask & status) {
+        set_intr_status(s, NVNET_IRQ_STATUS_MIIEVENT);
+    }
 }
 
 static void send_packet(NvNetState *s, const uint8_t *buf, size_t size)
@@ -846,14 +850,10 @@ static void nvnet_mmio_write(void *opaque, hwaddr addr, uint64_t val,
             s->tx_dma_buf_offset = 0;
         }
 
-        if (val & NVNET_TX_RX_CONTROL_BIT1) {
-            // FIXME
-            set_reg(s, NVNET_IRQ_STATUS, 0);
-            break;
-        } else if (val == 0) {
+        if ((val & NVNET_TX_RX_CONTROL_BIT1) || (val == 0)) {
             /* forcedeth waits for this bit to be set... */
-            set_reg(s, NVNET_UNKNOWN_SETUP_REG5,
-                    NVNET_UNKNOWN_SETUP_REG5_BIT31);
+            or_reg(s, NVNET_UNKNOWN_SETUP_REG5,
+                   NVNET_UNKNOWN_SETUP_REG5_BIT31);
         }
         break;
 
@@ -971,6 +971,7 @@ static void nvnet_reset(void *opaque)
     or_reg(s, NVNET_TX_RX_CONTROL, NVNET_TX_RX_CONTROL_IDLE);
 
     reset_phy_regs(s);
+    set_reg(s, NVNET_MII_MASK, NVNET_UNKNOWN_SETUP_REG4_VAL);
     memset(&s->tx_dma_buf, 0, sizeof(s->tx_dma_buf));
     memset(&s->rx_dma_buf, 0, sizeof(s->rx_dma_buf));
     s->tx_dma_buf_offset = 0;
