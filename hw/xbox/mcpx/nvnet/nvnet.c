@@ -260,6 +260,11 @@ static void set_mii_intr_status(NvNetState *s, uint32_t status)
     }
 }
 
+static void flush_queued_rx_packets(NvNetState *s)
+{
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
+}
+
 static void send_packet(NvNetState *s, const uint8_t *buf, size_t size)
 {
     NetClientState *nc = qemu_get_queue(s->nic);
@@ -543,11 +548,6 @@ static void dma_packet_from_guest(NvNetState *s)
         store_ring_desc(s, cur_desc_addr, desc);
 
         advance_next_tx_ring_desc_addr(s);
-
-        if (is_last_packet) {
-            // FIXME
-            break;
-        }
     }
 
     set_dma_idle(s, true);
@@ -618,20 +618,26 @@ static ssize_t nvnet_receive_iov(NetClientState *nc, const struct iovec *iov,
 {
     NvNetState *s = qemu_get_nic_opaque(nc);
     size_t size = iov_size(iov, iovcnt);
+    const uint8_t *rx_buf;
 
     if (is_packet_oversized(size)) {
         trace_nvnet_rx_oversized(size);
         return size;
     }
 
-    iov_to_buf(iov, iovcnt, 0, s->rx_dma_buf, size);
+    if (iovcnt == 1) {
+        rx_buf = iov[0].iov_base;
+    } else {
+        iov_to_buf(iov, iovcnt, 0, s->rx_dma_buf, size);
+        rx_buf = s->rx_dma_buf;
+    }
 
-    if (!receive_filter(s, s->rx_dma_buf, size)) {
+    if (!receive_filter(s, rx_buf, size)) {
         trace_nvnet_rx_filter_dropped();
         return size;
     }
 
-    return dma_packet_to_guest(s, s->rx_dma_buf, size);
+    return dma_packet_to_guest(s, rx_buf, size);
 }
 
 static ssize_t nvnet_receive(NetClientState *nc, const uint8_t *buf,
@@ -665,6 +671,7 @@ static void set_link_up(NvNetState *s)
 {
     update_regs_on_link_up(s);
     set_mii_intr_status(s, NVNET_MII_STATUS_LINKCHANGE);
+    flush_queued_rx_packets(s);
 }
 
 static void restart_autoneg(NvNetState *s)
@@ -855,6 +862,16 @@ static void nvnet_mmio_write(void *opaque, hwaddr addr, uint64_t val,
             or_reg(s, NVNET_UNKNOWN_SETUP_REG5,
                    NVNET_UNKNOWN_SETUP_REG5_BIT31);
         }
+
+        flush_queued_rx_packets(s);
+        break;
+
+    case NVNET_RECEIVER_CONTROL:
+    case NVNET_RX_RING_PHYS_ADDR:
+    case NVNET_RING_SIZE:
+    case NVNET_RX_RING_NEXT_DESC_PHYS_ADDR:
+        set_reg_ext(s, addr, val, size);
+        flush_queued_rx_packets(s);
         break;
 
     case NVNET_IRQ_STATUS:
