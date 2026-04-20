@@ -787,6 +787,7 @@ int pgraph_method(NV2AState *d, unsigned int subchannel,
 
         if (method == NV097_DRAW_ARRAYS && (max_lookahead_words >= 7) &&
             pg->inline_elements_length == 0 &&
+            pg->inline_array_length == 0 &&
             pg->draw_arrays_length <
                 (ARRAY_SIZE(pg->draw_arrays_start) - 1) &&
             LAMP(0, NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END) &&
@@ -2687,6 +2688,11 @@ DEF_METHOD_NON_INC(NV097, ARRAY_ELEMENT16)
 {
     pgraph_check_within_begin_end_block(pg);
 
+    if (pg->inline_array_length) {
+        d->pgraph.renderer->ops.flush_draw(d);
+        pgraph_reset_inline_buffers(pg);
+    }
+
     if (pg->draw_arrays_length) {
         pgraph_expand_draw_arrays(d);
     }
@@ -2699,6 +2705,11 @@ DEF_METHOD_NON_INC(NV097, ARRAY_ELEMENT16)
 DEF_METHOD_NON_INC(NV097, ARRAY_ELEMENT32)
 {
     pgraph_check_within_begin_end_block(pg);
+
+    if (pg->inline_array_length) {
+        d->pgraph.renderer->ops.flush_draw(d);
+        pgraph_reset_inline_buffers(pg);
+    }
 
     if (pg->draw_arrays_length) {
         pgraph_expand_draw_arrays(d);
@@ -2714,6 +2725,11 @@ DEF_METHOD(NV097, DRAW_ARRAYS)
 
     int32_t start = GET_MASK(parameter, NV097_DRAW_ARRAYS_START_INDEX);
     int32_t count = GET_MASK(parameter, NV097_DRAW_ARRAYS_COUNT) + 1;
+
+    if (pg->inline_array_length) {
+        d->pgraph.renderer->ops.flush_draw(d);
+        pgraph_reset_inline_buffers(pg);
+    }
 
     if (pg->inline_elements_length) {
         /* FIXME: HW throws an exception if the start index is > 0xFFFF. This
@@ -2756,6 +2772,12 @@ DEF_METHOD(NV097, DRAW_ARRAYS)
 DEF_METHOD_NON_INC(NV097, INLINE_ARRAY)
 {
     pgraph_check_within_begin_end_block(pg);
+
+    if (pg->inline_elements_length || pg->draw_arrays_length) {
+        d->pgraph.renderer->ops.flush_draw(d);
+        pgraph_reset_inline_buffers(pg);
+    }
+
     assert(pg->inline_array_length < NV2A_MAX_BATCH_LENGTH);
     pg->inline_array[pg->inline_array_length++] = parameter;
 }
