@@ -67,6 +67,25 @@ typedef struct DMAObject {
     hwaddr limit;
 } DMAObject;
 
+typedef struct PFIFOCache1Context {
+    uint32_t dma_put;
+    uint32_t dma_get;
+    uint32_t dma_instance;
+    uint32_t dma_state;
+    uint32_t dma_push;
+    uint32_t dma_fetch;
+    uint32_t dma_subroutine;
+    uint32_t dma_dcount;
+    uint32_t ref;
+    uint32_t acquire_0;
+    uint32_t acquire_1;
+    uint32_t acquire_2;
+    uint32_t semaphore;
+    uint32_t engine;
+    uint32_t pull1;
+    bool valid;
+} PFIFOCache1Context;
+
 typedef struct NV2AState {
     /*< private >*/
     PCIDevice parent_obj;
@@ -97,6 +116,7 @@ typedef struct NV2AState {
         uint32_t pending_interrupts;
         uint32_t enabled_interrupts;
         uint32_t regs[0x2000];
+        PFIFOCache1Context cache1_context[NV2A_NUM_CHANNELS];
         QemuMutex lock;
         QemuThread thread;
         QemuCond fifo_cond;

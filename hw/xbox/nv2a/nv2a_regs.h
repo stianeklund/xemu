@@ -172,6 +172,10 @@
 #   define NV_PFIFO_CACHE1_PULL0_ACCESS                        (1 << 0)
 #define NV_PFIFO_CACHE1_PULL1                            0x00001254
 #   define NV_PFIFO_CACHE1_PULL1_ENGINE                       0x00000003
+#define NV_PFIFO_CACHE1_ACQUIRE_0                        0x00001260
+#define NV_PFIFO_CACHE1_ACQUIRE_1                        0x00001264
+#define NV_PFIFO_CACHE1_ACQUIRE_2                        0x00001268
+#define NV_PFIFO_CACHE1_SEMAPHORE                        0x0000126C
 #define NV_PFIFO_CACHE1_GET                              0x00001270
 #define NV_PFIFO_CACHE1_ENGINE                           0x00001280
 #define NV_PFIFO_CACHE1_DMA_DCOUNT                       0x000012A0

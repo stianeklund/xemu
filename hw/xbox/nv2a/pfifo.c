@@ -32,6 +32,87 @@ typedef struct RAMHTEntry {
 static void pfifo_run_pusher(NV2AState *d);
 static uint32_t ramht_hash(NV2AState *d, uint32_t handle);
 static RAMHTEntry ramht_lookup(NV2AState *d, uint32_t handle);
+static void pfifo_log_bad_object_lookup(NV2AState *d, uint32_t method,
+                                        uint32_t handle);
+static void pfifo_cache1_context_sync_current(NV2AState *d);
+
+static PFIFOCache1Context *pfifo_cache1_context_for_chid(NV2AState *d,
+                                                         unsigned int chid)
+{
+    assert(chid < NV2A_NUM_CHANNELS);
+    return &d->pfifo.cache1_context[chid];
+}
+
+static void pfifo_cache1_context_save(NV2AState *d, unsigned int chid)
+{
+    PFIFOCache1Context *ctx = pfifo_cache1_context_for_chid(d, chid);
+
+    ctx->dma_put = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT];
+    ctx->dma_get = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET];
+    ctx->dma_instance = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_INSTANCE];
+    ctx->dma_state = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_STATE];
+    ctx->dma_push = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUSH];
+    ctx->dma_fetch = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_FETCH];
+    ctx->dma_subroutine = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_SUBROUTINE];
+    ctx->dma_dcount = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_DCOUNT];
+    ctx->ref = d->pfifo.regs[NV_PFIFO_CACHE1_REF];
+    ctx->acquire_0 = d->pfifo.regs[NV_PFIFO_CACHE1_ACQUIRE_0];
+    ctx->acquire_1 = d->pfifo.regs[NV_PFIFO_CACHE1_ACQUIRE_1];
+    ctx->acquire_2 = d->pfifo.regs[NV_PFIFO_CACHE1_ACQUIRE_2];
+    ctx->semaphore = d->pfifo.regs[NV_PFIFO_CACHE1_SEMAPHORE];
+    ctx->engine = d->pfifo.regs[NV_PFIFO_CACHE1_ENGINE];
+    ctx->pull1 = d->pfifo.regs[NV_PFIFO_CACHE1_PULL1];
+    ctx->valid = true;
+}
+
+static void pfifo_cache1_context_restore(NV2AState *d, unsigned int chid)
+{
+    PFIFOCache1Context *ctx = pfifo_cache1_context_for_chid(d, chid);
+
+    if (!ctx->valid) {
+        memset(ctx, 0, sizeof(*ctx));
+        ctx->valid = true;
+    }
+
+    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT] = ctx->dma_put;
+    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET] = ctx->dma_get;
+    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_INSTANCE] = ctx->dma_instance;
+    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_STATE] = ctx->dma_state;
+    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUSH] = ctx->dma_push;
+    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_FETCH] = ctx->dma_fetch;
+    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_SUBROUTINE] = ctx->dma_subroutine;
+    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_DCOUNT] = ctx->dma_dcount;
+    d->pfifo.regs[NV_PFIFO_CACHE1_REF] = ctx->ref;
+    d->pfifo.regs[NV_PFIFO_CACHE1_ACQUIRE_0] = ctx->acquire_0;
+    d->pfifo.regs[NV_PFIFO_CACHE1_ACQUIRE_1] = ctx->acquire_1;
+    d->pfifo.regs[NV_PFIFO_CACHE1_ACQUIRE_2] = ctx->acquire_2;
+    d->pfifo.regs[NV_PFIFO_CACHE1_SEMAPHORE] = ctx->semaphore;
+    d->pfifo.regs[NV_PFIFO_CACHE1_ENGINE] = ctx->engine;
+    d->pfifo.regs[NV_PFIFO_CACHE1_PULL1] = ctx->pull1;
+}
+
+static void pfifo_cache1_context_sync_current(NV2AState *d)
+{
+    unsigned int chid = GET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_PUSH1],
+                                 NV_PFIFO_CACHE1_PUSH1_CHID);
+    pfifo_cache1_context_save(d, chid);
+}
+
+static void pfifo_log_bad_object_lookup(NV2AState *d, uint32_t method,
+                                        uint32_t handle)
+{
+    uint32_t ramht = d->pfifo.regs[NV_PFIFO_RAMHT];
+    uint32_t chid = GET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_PUSH1],
+                             NV_PFIFO_CACHE1_PUSH1_CHID);
+    uint32_t hash = ramht_hash(d, handle);
+    uint32_t search_depth =
+        1 << (GET_MASK(ramht, NV_PFIFO_RAMHT_SEARCH) + 4);
+
+    fprintf(stderr,
+            "NV2A: Method 0x%X references invalid object 0x%X "
+            "(chid=%u hash=0x%x search=%u ramht=0x%08x)\n",
+            method, handle, chid, hash, search_depth, ramht);
+}
 
 /* PFIFO - MMIO and DMA FIFO submission to PGRAPH and VPE */
 uint64_t pfifo_read(void *opaque, hwaddr addr, unsigned int size)
@@ -80,14 +161,71 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
         nv2a_update_irq(d);
         break;
     default:
-        if (addr == NV_PFIFO_CACHE1_DMA_GET) {
-            static int mmio_get_count;
-            if (mmio_get_count++ < 5) {
-                fprintf(stderr, "NV2A: PFIFO MMIO write DMA_GET = 0x%08" PRIx64 " (was 0x%08x)\n",
-                        val, d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET]);
+        if (addr == NV_PFIFO_CACHE1_PUSH1) {
+            uint32_t old_push1 = d->pfifo.regs[NV_PFIFO_CACHE1_PUSH1];
+            unsigned int old_chid =
+                GET_MASK(old_push1, NV_PFIFO_CACHE1_PUSH1_CHID);
+            unsigned int new_chid =
+                GET_MASK((uint32_t)val, NV_PFIFO_CACHE1_PUSH1_CHID);
+
+            if (new_chid == old_chid) {
+                d->pfifo.regs[addr] = val;
+                break;
             }
+
+            uint32_t channel_modes = d->pfifo.regs[NV_PFIFO_MODE];
+            bool old_dma_mode =
+                GET_MASK(old_push1, NV_PFIFO_CACHE1_PUSH1_MODE) ==
+                NV_PFIFO_CACHE1_PUSH1_MODE_DMA;
+            bool new_dma_mode = (channel_modes & (1 << new_chid)) &&
+                                new_chid != 1;
+
+            pfifo_cache1_context_save(d, old_chid);
+
+            if (old_dma_mode) {
+                uint32_t dma = d->pfifo.regs[NV_PFIFO_DMA];
+                dma &= ~(1 << old_chid);
+                if (d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT] !=
+                    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET]) {
+                    dma |= (1 << old_chid);
+                }
+                d->pfifo.regs[NV_PFIFO_DMA] = dma;
+            }
+
+            d->pfifo.regs[addr] = val;
+            SET_MASK(d->pfifo.regs[addr], NV_PFIFO_CACHE1_PUSH1_MODE,
+                     new_dma_mode ? NV_PFIFO_CACHE1_PUSH1_MODE_DMA
+                                  : NV_PFIFO_CACHE1_PUSH1_MODE_PIO);
+
+            pfifo_cache1_context_restore(d, new_chid);
+            SET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUSH],
+                     NV_PFIFO_CACHE1_DMA_PUSH_ACCESS, new_dma_mode ? 1 : 0);
+            break;
         }
+
         d->pfifo.regs[addr] = val;
+
+        switch (addr) {
+        case NV_PFIFO_CACHE1_DMA_PUT:
+        case NV_PFIFO_CACHE1_DMA_GET:
+        case NV_PFIFO_CACHE1_DMA_INSTANCE:
+        case NV_PFIFO_CACHE1_DMA_STATE:
+        case NV_PFIFO_CACHE1_DMA_PUSH:
+        case NV_PFIFO_CACHE1_DMA_FETCH:
+        case NV_PFIFO_CACHE1_DMA_SUBROUTINE:
+        case NV_PFIFO_CACHE1_DMA_DCOUNT:
+        case NV_PFIFO_CACHE1_ENGINE:
+        case NV_PFIFO_CACHE1_PULL1:
+        case NV_PFIFO_CACHE1_REF:
+        case NV_PFIFO_CACHE1_ACQUIRE_0:
+        case NV_PFIFO_CACHE1_ACQUIRE_1:
+        case NV_PFIFO_CACHE1_ACQUIRE_2:
+        case NV_PFIFO_CACHE1_SEMAPHORE:
+            pfifo_cache1_context_sync_current(d);
+            break;
+        default:
+            break;
+        }
         break;
     }
 
@@ -182,8 +320,13 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
 
     if (method == 0) {
         RAMHTEntry entry = ramht_lookup(d, parameter);
-        assert(entry.valid);
-        // assert(entry.channel_id == state->channel_id);
+        if (!entry.valid) {
+            pfifo_log_bad_object_lookup(d, method, parameter);
+            SET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_DMA_STATE],
+                     NV_PFIFO_CACHE1_DMA_STATE_ERROR,
+                     NV_PFIFO_CACHE1_DMA_STATE_ERROR_NON_CACHE);
+            return -1;
+        }
 
         /* the engine is bound to the subchannel */
         assert(subchannel < 8);
@@ -221,7 +364,10 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
             //bql_lock();
             RAMHTEntry entry = ramht_lookup(d, parameter);
             if (!entry.valid) {
-                fprintf(stderr, "NV2A: Method 0x%X references invalid object 0x%X\n", method, parameter);
+                pfifo_log_bad_object_lookup(d, method, parameter);
+                SET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_DMA_STATE],
+                         NV_PFIFO_CACHE1_DMA_STATE_ERROR,
+                         NV_PFIFO_CACHE1_DMA_STATE_ERROR_NON_CACHE);
                 return -1;
             }
             // assert(entry.channel_id == state->channel_id);
@@ -486,8 +632,9 @@ static void pfifo_run_pusher(NV2AState *d)
                 {
                     static int rsvd_count;
                     if (rsvd_count++ < 5) {
-                        fprintf(stderr, "NV2A: PFIFO reserved cmd at dma_get=0x%x word=0x%08x\n",
-                                dma_get_v, word);
+                        fprintf(stderr,
+                                "NV2A: PFIFO reserved cmd at dma_get=0x%x word=0x%08x dma_state=0x%08x\n",
+                                dma_get_v, word, *dma_state);
                     }
                 }
                 SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
@@ -511,7 +658,9 @@ static void pfifo_run_pusher(NV2AState *d)
         {
             static int pusher_err_count;
             if (pusher_err_count++ < 5) {
-                fprintf(stderr, "NV2A: PFIFO DMA pusher error %d, suspending and firing IRQ\n", error);
+                fprintf(stderr,
+                        "NV2A: PFIFO DMA pusher error %d, suspending and firing IRQ (chid=%u get=0x%08x put=0x%08x state=0x%08x)\n",
+                        error, channel_id, *dma_get, *dma_put, *dma_state);
             }
         }
 
@@ -568,13 +717,13 @@ static uint32_t ramht_hash(NV2AState *d, uint32_t handle)
 {
     unsigned int ramht_size =
         1 << (GET_MASK(d->pfifo.regs[NV_PFIFO_RAMHT], NV_PFIFO_RAMHT_SIZE)+12);
-
-    /* XXX: Think this is different to what nouveau calculates... */
-    unsigned int bits = ctz32(ramht_size)-1;
+    unsigned int ramht_entries = ramht_size / 8;
+    unsigned int bits = ctz32(ramht_entries);
+    uint32_t hash_mask = (1u << bits) - 1;
 
     uint32_t hash = 0;
     while (handle) {
-        hash ^= (handle & ((1 << bits) - 1));
+        hash ^= (handle & hash_mask);
         handle >>= bits;
     }
 
@@ -582,7 +731,7 @@ static uint32_t ramht_hash(NV2AState *d, uint32_t handle)
                                        NV_PFIFO_CACHE1_PUSH1_CHID);
     hash ^= channel_id << (bits - 4);
 
-    return hash;
+    return hash & (ramht_entries - 1);
 }
 
 
@@ -590,26 +739,45 @@ static RAMHTEntry ramht_lookup(NV2AState *d, uint32_t handle)
 {
     hwaddr ramht_size =
         1 << (GET_MASK(d->pfifo.regs[NV_PFIFO_RAMHT], NV_PFIFO_RAMHT_SIZE)+12);
+    uint32_t ramht_entries = ramht_size / 8;
 
     uint32_t hash = ramht_hash(d, handle);
-    assert(hash * 8 < ramht_size);
-
     hwaddr ramht_address =
         GET_MASK(d->pfifo.regs[NV_PFIFO_RAMHT],
                  NV_PFIFO_RAMHT_BASE_ADDRESS) << 12;
+    uint32_t current_chid = GET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_PUSH1],
+                                     NV_PFIFO_CACHE1_PUSH1_CHID);
+    uint32_t search_depth =
+        1 << (GET_MASK(d->pfifo.regs[NV_PFIFO_RAMHT], NV_PFIFO_RAMHT_SEARCH) + 4);
+    uint32_t num_probes = MIN(search_depth, ramht_entries);
+    hwaddr ramin_size = memory_region_size(&d->ramin);
 
-    assert(ramht_address + hash * 8 < memory_region_size(&d->ramin));
+    if (!ramht_entries || ramht_address > ramin_size ||
+        ramht_size > ramin_size - ramht_address) {
+        return (RAMHTEntry){ 0 };
+    }
 
-    uint8_t *entry_ptr = d->ramin_ptr + ramht_address + hash * 8;
+    for (uint32_t i = 0; i < num_probes; i++) {
+        uint32_t slot = (hash + i) % ramht_entries;
+        uint8_t *entry_ptr = d->ramin_ptr + ramht_address + slot * 8;
 
-    uint32_t entry_handle = ldl_le_p((uint32_t*)entry_ptr);
-    uint32_t entry_context = ldl_le_p((uint32_t*)(entry_ptr + 4));
+        uint32_t entry_handle = ldl_le_p((uint32_t*)entry_ptr);
+        uint32_t entry_context = ldl_le_p((uint32_t*)(entry_ptr + 4));
+        uint32_t entry_chid = (entry_context & NV_RAMHT_CHID) >> 24;
+        bool entry_valid = entry_context & NV_RAMHT_STATUS;
 
-    return (RAMHTEntry){
-        .handle = entry_handle,
-        .instance = (entry_context & NV_RAMHT_INSTANCE) << 4,
-        .engine = (entry_context & NV_RAMHT_ENGINE) >> 16,
-        .channel_id = (entry_context & NV_RAMHT_CHID) >> 24,
-        .valid = entry_context & NV_RAMHT_STATUS,
-    };
+        if (!entry_valid || entry_handle != handle || entry_chid != current_chid) {
+            continue;
+        }
+
+        return (RAMHTEntry){
+            .handle = entry_handle,
+            .instance = (entry_context & NV_RAMHT_INSTANCE) << 4,
+            .engine = (entry_context & NV_RAMHT_ENGINE) >> 16,
+            .channel_id = entry_chid,
+            .valid = true,
+        };
+    }
+
+    return (RAMHTEntry){ 0 };
 }

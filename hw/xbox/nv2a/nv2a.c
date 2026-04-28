@@ -298,6 +298,7 @@ static void nv2a_reset(NV2AState *d)
     }
 
     memset(d->pfifo.regs, 0, sizeof(d->pfifo.regs));
+    memset(d->pfifo.cache1_context, 0, sizeof(d->pfifo.cache1_context));
     memset(d->pgraph.regs_, 0, sizeof(d->pgraph.regs_));
     memset(d->pvideo.regs, 0, sizeof(d->pvideo.regs));
 
