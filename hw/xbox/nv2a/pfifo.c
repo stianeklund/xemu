@@ -98,6 +98,28 @@ static void pfifo_cache1_context_sync_current(NV2AState *d)
     pfifo_cache1_context_save(d, chid);
 }
 
+static void pfifo_dma_update_pending(NV2AState *d, unsigned int chid,
+                                     uint32_t dma_get, uint32_t dma_put)
+{
+    uint32_t mask = 1u << chid;
+
+    if ((d->pfifo.regs[NV_PFIFO_MODE] & mask) && dma_get != dma_put) {
+        d->pfifo.regs[NV_PFIFO_DMA] |= mask;
+    } else {
+        d->pfifo.regs[NV_PFIFO_DMA] &= ~mask;
+    }
+}
+
+static void pfifo_dma_update_current_pending(NV2AState *d)
+{
+    unsigned int chid = GET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_PUSH1],
+                                 NV_PFIFO_CACHE1_PUSH1_CHID);
+
+    pfifo_dma_update_pending(d, chid,
+                             d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET],
+                             d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT]);
+}
+
 static void pfifo_log_bad_object_lookup(NV2AState *d, uint32_t method,
                                         uint32_t handle)
 {
@@ -169,7 +191,20 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
                 GET_MASK((uint32_t)val, NV_PFIFO_CACHE1_PUSH1_CHID);
 
             if (new_chid == old_chid) {
+                bool new_dma_mode =
+                    d->pfifo.regs[NV_PFIFO_MODE] & (1u << new_chid);
+
                 d->pfifo.regs[addr] = val;
+                SET_MASK(d->pfifo.regs[addr], NV_PFIFO_CACHE1_PUSH1_MODE,
+                         new_dma_mode ? NV_PFIFO_CACHE1_PUSH1_MODE_DMA
+                                      : NV_PFIFO_CACHE1_PUSH1_MODE_PIO);
+                SET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUSH],
+                         NV_PFIFO_CACHE1_DMA_PUSH_ACCESS,
+                         new_dma_mode ? 1 : 0);
+                pfifo_dma_update_pending(
+                    d, new_chid, d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET],
+                    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT]);
+                pfifo_cache1_context_sync_current(d);
                 break;
             }
 
@@ -177,18 +212,14 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
             bool old_dma_mode =
                 GET_MASK(old_push1, NV_PFIFO_CACHE1_PUSH1_MODE) ==
                 NV_PFIFO_CACHE1_PUSH1_MODE_DMA;
-            bool new_dma_mode = channel_modes & (1 << new_chid);
+            bool new_dma_mode = channel_modes & (1u << new_chid);
 
             pfifo_cache1_context_save(d, old_chid);
 
             if (old_dma_mode) {
-                uint32_t dma = d->pfifo.regs[NV_PFIFO_DMA];
-                dma &= ~(1 << old_chid);
-                if (d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT] !=
-                    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET]) {
-                    dma |= (1 << old_chid);
-                }
-                d->pfifo.regs[NV_PFIFO_DMA] = dma;
+                pfifo_dma_update_pending(
+                    d, old_chid, d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET],
+                    d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT]);
             }
 
             d->pfifo.regs[addr] = val;
@@ -199,14 +230,36 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
             pfifo_cache1_context_restore(d, new_chid);
             SET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUSH],
                      NV_PFIFO_CACHE1_DMA_PUSH_ACCESS, new_dma_mode ? 1 : 0);
+            pfifo_dma_update_pending(
+                d, new_chid, d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET],
+                d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT]);
             break;
         }
 
         d->pfifo.regs[addr] = val;
 
         switch (addr) {
+        case NV_PFIFO_MODE: {
+            unsigned int chid =
+                GET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_PUSH1],
+                         NV_PFIFO_CACHE1_PUSH1_CHID);
+            bool dma_mode = d->pfifo.regs[NV_PFIFO_MODE] & (1u << chid);
+
+            SET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_PUSH1],
+                     NV_PFIFO_CACHE1_PUSH1_MODE,
+                     dma_mode ? NV_PFIFO_CACHE1_PUSH1_MODE_DMA
+                              : NV_PFIFO_CACHE1_PUSH1_MODE_PIO);
+            SET_MASK(d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUSH],
+                     NV_PFIFO_CACHE1_DMA_PUSH_ACCESS, dma_mode ? 1 : 0);
+            pfifo_dma_update_current_pending(d);
+            pfifo_cache1_context_sync_current(d);
+            break;
+        }
         case NV_PFIFO_CACHE1_DMA_PUT:
         case NV_PFIFO_CACHE1_DMA_GET:
+            pfifo_dma_update_current_pending(d);
+            pfifo_cache1_context_sync_current(d);
+            break;
         case NV_PFIFO_CACHE1_DMA_INSTANCE:
         case NV_PFIFO_CACHE1_DMA_STATE:
         case NV_PFIFO_CACHE1_DMA_PUSH:
@@ -455,10 +508,13 @@ static void pfifo_run_pusher(NV2AState *d)
     unsigned int channel_id = GET_MASK(*push1,
                                        NV_PFIFO_CACHE1_PUSH1_CHID);
 
+    if (!(d->pfifo.regs[NV_PFIFO_DMA] & (1u << channel_id))) {
+        return;
+    }
 
     /* Channel running DMA mode */
     uint32_t channel_modes = d->pfifo.regs[NV_PFIFO_MODE];
-    assert(channel_modes & (1 << channel_id));
+    assert(channel_modes & (1u << channel_id));
 
     assert(GET_MASK(*push1, NV_PFIFO_CACHE1_PUSH1_MODE)
             == NV_PFIFO_CACHE1_PUSH1_MODE_DMA);
@@ -478,7 +534,10 @@ static void pfifo_run_pusher(NV2AState *d)
     while (!pfifo_pusher_should_stall(d)) {
         uint32_t dma_get_v = *dma_get;
         uint32_t dma_put_v = *dma_put;
-        if (dma_get_v == dma_put_v) break;
+        if (dma_get_v == dma_put_v) {
+            pfifo_dma_update_pending(d, channel_id, dma_get_v, dma_put_v);
+            break;
+        }
         if (dma_get_v >= dma_len) {
             static int prot_count;
             if (prot_count++ < 5) {
@@ -528,6 +587,10 @@ static void pfifo_run_pusher(NV2AState *d)
                                  MIN(method_count, num_words_available),
                                  num_words_available);
             if (num_words_processed < 0) {
+                if (GET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR)) {
+                    *dma_get = dma_get_v;
+                    pfifo_dma_update_pending(d, channel_id, *dma_get, *dma_put);
+                }
                 break;
             }
 
@@ -560,6 +623,8 @@ static void pfifo_run_pusher(NV2AState *d)
                     dma_get_v = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET_JMP_SHADOW];
                     SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
                              NV_PFIFO_CACHE1_DMA_STATE_ERROR_PROTECTION);
+                    *dma_get = dma_get_v;
+                    pfifo_dma_update_pending(d, channel_id, *dma_get, *dma_put);
                     break;
                 }
             } else if ((word & 3) == 1) {
@@ -576,6 +641,8 @@ static void pfifo_run_pusher(NV2AState *d)
                     dma_get_v = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET_JMP_SHADOW];
                     SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
                              NV_PFIFO_CACHE1_DMA_STATE_ERROR_PROTECTION);
+                    *dma_get = dma_get_v;
+                    pfifo_dma_update_pending(d, channel_id, *dma_get, *dma_put);
                     break;
                 }
             } else if ((word & 3) == 2) {
@@ -583,6 +650,8 @@ static void pfifo_run_pusher(NV2AState *d)
                 if (subroutine_state) {
                     SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
                              NV_PFIFO_CACHE1_DMA_STATE_ERROR_CALL);
+                    *dma_get = dma_get_v;
+                    pfifo_dma_update_pending(d, channel_id, *dma_get, *dma_put);
                     break;
                 } else {
                     *dma_subroutine = dma_get_v;
@@ -598,6 +667,9 @@ static void pfifo_run_pusher(NV2AState *d)
                                  NV_PFIFO_CACHE1_DMA_SUBROUTINE_STATE, 0);
                         SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
                                  NV_PFIFO_CACHE1_DMA_STATE_ERROR_PROTECTION);
+                        *dma_get = dma_get_v;
+                        pfifo_dma_update_pending(d, channel_id, *dma_get,
+                                                 *dma_put);
                         break;
                     }
                 }
@@ -646,11 +718,14 @@ static void pfifo_run_pusher(NV2AState *d)
                 }
                 SET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR,
                          NV_PFIFO_CACHE1_DMA_STATE_ERROR_RESERVED_CMD);
+                *dma_get = dma_get_v;
+                pfifo_dma_update_pending(d, channel_id, *dma_get, *dma_put);
                 break;
             }
         }
 
         *dma_get = dma_get_v;
+        pfifo_dma_update_pending(d, channel_id, *dma_get, *dma_put);
 
         if (GET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR)) {
             break;
@@ -666,8 +741,9 @@ static void pfifo_run_pusher(NV2AState *d)
             static int pusher_err_count;
             if (pusher_err_count++ < 5) {
                 fprintf(stderr,
-                        "NV2A: PFIFO DMA pusher error %d, suspending and firing IRQ (chid=%u get=0x%08x put=0x%08x state=0x%08x)\n",
-                        error, channel_id, *dma_get, *dma_put, *dma_state);
+                        "NV2A: PFIFO DMA pusher error %d, suspending and firing IRQ (chid=%u get=0x%08x put=0x%08x state=0x%08x dma=0x%08x)\n",
+                        error, channel_id, *dma_get, *dma_put, *dma_state,
+                        d->pfifo.regs[NV_PFIFO_DMA]);
             }
         }
 
