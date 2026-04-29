@@ -123,6 +123,8 @@
 #   define NV_PFIFO_RUNOUT_STATUS_RANOUT                       (1 << 0)
 #   define NV_PFIFO_RUNOUT_STATUS_LOW_MARK                     (1 << 4)
 #   define NV_PFIFO_RUNOUT_STATUS_HIGH_MARK                    (1 << 8)
+#define NV_PFIFO_CACHES                                  0x00000500
+#   define NV_PFIFO_CACHES_REASSIGN                            (1 << 0)
 #define NV_PFIFO_MODE                                    0x00000504
 #define NV_PFIFO_DMA                                     0x00000508
 #define NV_PFIFO_CACHE1_PUSH0                            0x00001200

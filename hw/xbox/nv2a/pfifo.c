@@ -177,8 +177,7 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
             bool old_dma_mode =
                 GET_MASK(old_push1, NV_PFIFO_CACHE1_PUSH1_MODE) ==
                 NV_PFIFO_CACHE1_PUSH1_MODE_DMA;
-            bool new_dma_mode = (channel_modes & (1 << new_chid)) &&
-                                new_chid != 1;
+            bool new_dma_mode = channel_modes & (1 << new_chid);
 
             pfifo_cache1_context_save(d, old_chid);
 
@@ -245,6 +244,11 @@ static bool can_fifo_access(NV2AState *d) {
            NV_PGRAPH_FIFO_ACCESS;
 }
 
+static bool pfifo_caches_enabled(NV2AState *d)
+{
+    return d->pfifo.regs[NV_PFIFO_CACHES] & NV_PFIFO_CACHES_REASSIGN;
+}
+
 /* If NV097_FLIP_STALL was executed, check if the flip has completed.
  * This will usually happen in the VSYNC interrupt handler.
  */
@@ -286,7 +290,8 @@ static bool pfifo_stall_for_flip(NV2AState *d)
 
 static bool pfifo_puller_should_stall(NV2AState *d)
 {
-    return pfifo_stall_for_flip(d) || qatomic_read(&d->pgraph.waiting_for_nop) ||
+    return !pfifo_caches_enabled(d) ||
+           pfifo_stall_for_flip(d) || qatomic_read(&d->pgraph.waiting_for_nop) ||
            qatomic_read(&d->pgraph.waiting_for_context_switch) ||
            !can_fifo_access(d);
 }
@@ -420,7 +425,8 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
 
 static bool pfifo_pusher_should_stall(NV2AState *d)
 {
-    return !can_fifo_access(d) ||
+    return !pfifo_caches_enabled(d) ||
+           !can_fifo_access(d) ||
            qatomic_read(&d->pgraph.waiting_for_nop);
 }
 
@@ -436,7 +442,8 @@ static void pfifo_run_pusher(NV2AState *d)
     uint32_t *dma_dcount = &d->pfifo.regs[NV_PFIFO_CACHE1_DMA_DCOUNT];
     uint32_t *status = &d->pfifo.regs[NV_PFIFO_CACHE1_STATUS];
 
-    if (!GET_MASK(*push0, NV_PFIFO_CACHE1_PUSH0_ACCESS) ||
+    if (!pfifo_caches_enabled(d) ||
+        !GET_MASK(*push0, NV_PFIFO_CACHE1_PUSH0_ACCESS) ||
         !GET_MASK(*dma_push, NV_PFIFO_CACHE1_DMA_PUSH_ACCESS) ||
         GET_MASK(*dma_push, NV_PFIFO_CACHE1_DMA_PUSH_STATUS)) {
         return;
