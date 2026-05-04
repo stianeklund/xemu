@@ -48,12 +48,15 @@
 #define XID_GET_CAPABILITIES 0x01
 
 #define XID_DEVICETYPE_GAMEPAD 0x01
+#define XID_DEVICETYPE_DEBUG_KEYBOARD 0x02
 
 #define XID_DEVICESUBTYPE_GAMEPAD 0x01
 #define XID_DEVICESUBTYPE_GAMEPAD_S 0x02
+#define XID_DEVICESUBTYPE_KEYBOARD 0x01
 
 #define TYPE_USB_XID_GAMEPAD "usb-xbox-gamepad"
 #define TYPE_USB_XID_GAMEPAD_S "usb-xbox-gamepad-s"
+#define TYPE_USB_XID_KEYBOARD "usb-xbox-debug-keyboard"
 
 #define GAMEPAD_A 0
 #define GAMEPAD_B 1
@@ -122,6 +125,22 @@ typedef struct USBXIDGamepadState {
     XIDGamepadOutputReport out_state_capabilities;
     uint8_t device_index;
 } USBXIDGamepadState;
+
+#define XID_KEYBOARD_MAX_KEYS 6
+
+typedef struct XIDKeyboardReport {
+    uint8_t modifiers;
+    uint8_t reserved;
+    uint8_t keys[XID_KEYBOARD_MAX_KEYS];
+} QEMU_PACKED XIDKeyboardReport;
+
+typedef struct USBXIDKeyboardState {
+    USBDevice dev;
+    USBEndpoint *intr;
+    const XIDDesc *xid_desc;
+    XIDKeyboardReport in_state;
+    uint8_t out_state;
+} USBXIDKeyboardState;
 
 void update_input(USBXIDGamepadState *s);
 void update_output(USBXIDGamepadState *s);

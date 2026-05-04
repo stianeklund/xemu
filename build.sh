@@ -9,21 +9,21 @@ project_source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd
 target_arch=$(uname -m)
 
 package_windows() {
-    rm -rf dist
+    rm -rf dist || true
     mkdir -p dist
     cp build/qemu-system-i386w.exe dist/xemu.exe
     python3 "${project_source_dir}/get_deps.py" dist/xemu.exe dist
 }
 
 package_wincross() {
-    rm -rf dist
+    rm -rf dist || true
     mkdir -p dist
     cp build/qemu-system-i386w.exe dist/xemu.exe
     python3 ./scripts/gen-license.py --platform windows > dist/LICENSE.txt
 }
 
 package_macos() {
-    rm -rf dist
+    rm -rf dist || true
 
     # Copy in executable
     mkdir -p dist/xemu.app/Contents/MacOS/
@@ -80,7 +80,7 @@ package_macos() {
 }
 
 package_linux() {
-    rm -rf dist
+    rm -rf dist || true
     mkdir -p dist
     cp build/qemu-system-i386 dist/xemu
     if test -e "${project_source_dir}/XEMU_LICENSE"; then
@@ -91,6 +91,7 @@ package_linux() {
 }
 
 postbuild=''
+do_package='y'
 debug_opts=''
 build_cflags=''
 default_job_count='12'
@@ -143,6 +144,10 @@ do
         ;;
     '--debug')
         debug="y"
+        shift
+        ;;
+    '--no-package')
+        do_package=''
         shift
         ;;
     '-p'*)
@@ -271,4 +276,6 @@ set -x # Print commands from now on
 
 time make -j"${job_count}" ${target} 2>&1 | tee build.log
 
-"${postbuild}" # call post build functions
+if test -n "${do_package}"; then
+    "${postbuild}" # call post build functions
+fi

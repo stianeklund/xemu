@@ -34,6 +34,7 @@
 
 #define DRIVER_DUKE "usb-xbox-gamepad"
 #define DRIVER_S "usb-xbox-gamepad-s"
+#define DRIVER_DEBUG_KEYBOARD "usb-xbox-debug-keyboard"
 
 #define DRIVER_DUKE_DISPLAY_NAME "Xbox Controller"
 #define DRIVER_S_DISPLAY_NAME "Xbox Controller S"
@@ -145,6 +146,8 @@ void xemu_save_peripheral_settings(int player_index, int peripheral_index,
 void xemu_input_set_test_mode(int enabled);
 int xemu_input_get_test_mode(void);
 void xemu_input_reset_input_mapping(ControllerState *state);
+void xemu_input_attach_debug_keyboard(void);
+bool xemu_input_debug_keyboard_attached(void);
 
 #ifdef __cplusplus
 }

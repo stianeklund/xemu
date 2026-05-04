@@ -38,6 +38,10 @@
 #include "gl-helpers.hh"
 #include "input-manager.hh"
 #include "snapshot-manager.hh"
+
+extern "C" {
+#include "ui/xemu-input.h"
+}
 #include "viewport-manager.hh"
 #include "font-manager.hh"
 #include "scene.hh"
@@ -285,9 +289,10 @@ void xemu_hud_update(void)
             menu_button = true;
         }
 
-        if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
+        bool debug_keyboard_attached = xemu_input_debug_keyboard_attached();
+        if (!debug_keyboard_attached && ImGui::IsKeyPressed(ImGuiKey_F1)) {
             g_scene_mgr.PushScene(g_main_menu);
-        } else if (ImGui::IsKeyPressed(ImGuiKey_F2)) {
+        } else if (!debug_keyboard_attached && ImGui::IsKeyPressed(ImGuiKey_F2)) {
             g_scene_mgr.PushScene(g_popup_menu);
         } else if (menu_button ||
                    (ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
@@ -297,11 +302,13 @@ void xemu_hud_update(void)
             xemu_toggle_fullscreen();
         }
 
-        bool mod_key_down = ImGui::IsKeyDown(ImGuiKey_ModShift);
-        for (int f_key = 0; f_key < 4; ++f_key) {
-            if (ImGui::IsKeyPressed((enum ImGuiKey)(ImGuiKey_F5 + f_key))) {
-                ActionActivateBoundSnapshot(f_key, mod_key_down);
-                break;
+        if (!debug_keyboard_attached) {
+            bool mod_key_down = ImGui::IsKeyDown(ImGuiKey_ModShift);
+            for (int f_key = 0; f_key < 4; ++f_key) {
+                if (ImGui::IsKeyPressed((enum ImGuiKey)(ImGuiKey_F5 + f_key))) {
+                    ActionActivateBoundSnapshot(f_key, mod_key_down);
+                    break;
+                }
             }
         }
     }

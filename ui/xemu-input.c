@@ -308,6 +308,63 @@ void xemu_input_init(void)
     }
 
     QTAILQ_INSERT_TAIL(&available_controllers, new_con, entry);
+
+    xemu_input_attach_debug_keyboard();
+}
+
+static void *s_debug_keyboard_dev = NULL;
+
+static char *xemu_input_get_debug_keyboard_port_path(void)
+{
+    static const int direct_port_preference[4] = { 3, 2, 1, 0 };
+
+    for (int i = 0; i < 4; i++) {
+        int index = direct_port_preference[i];
+        if (!bound_controllers[index]) {
+            return g_strdup_printf("1.%d", port_map[index]);
+        }
+    }
+
+    for (int index = 0; index < 4; index++) {
+        ControllerState *state = bound_controllers[index];
+        if (state && state->peripheral_types[0] == PERIPHERAL_NONE) {
+            return g_strdup_printf("1.%d.2", port_map[index]);
+        }
+        if (state && state->peripheral_types[1] == PERIPHERAL_NONE) {
+            return g_strdup_printf("1.%d.3", port_map[index]);
+        }
+    }
+
+    return NULL;
+}
+
+void xemu_input_attach_debug_keyboard(void)
+{
+    if (s_debug_keyboard_dev) {
+        return;
+    }
+
+    char *port_path = xemu_input_get_debug_keyboard_port_path();
+    if (!port_path) {
+        return;
+    }
+
+    QDict *qdict = qdict_new();
+    qdict_put_str(qdict, "driver", DRIVER_DEBUG_KEYBOARD);
+    qdict_put_str(qdict, "port", port_path);
+    QemuOpts *opts = qemu_opts_from_qdict(qemu_find_opts("device"), qdict,
+                                           &error_abort);
+    DeviceState *dev = qdev_device_add(opts, &error_abort);
+    if (dev) {
+        s_debug_keyboard_dev = dev;
+    }
+    qobject_unref(qdict);
+    g_free(port_path);
+}
+
+bool xemu_input_debug_keyboard_attached(void)
+{
+    return s_debug_keyboard_dev != NULL;
 }
 
 int xemu_input_get_controller_default_bind_port(ControllerState *state, int start)

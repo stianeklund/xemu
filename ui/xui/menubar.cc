@@ -29,6 +29,10 @@
 #include "update.hh"
 #include "../xemu-os-utils.h"
 
+extern "C" {
+#include "ui/xemu-input.h"
+}
+
 extern float g_main_menu_height; // FIXME
 
 #ifdef CONFIG_RENDERDOC
@@ -63,11 +67,12 @@ void ProcessKeyboardShortcuts(void)
         ActionShutdown();
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_GraveAccent)) {
+    bool debug_keyboard_attached = xemu_input_debug_keyboard_attached();
+    if (!debug_keyboard_attached && ImGui::IsKeyPressed(ImGuiKey_GraveAccent)) {
         monitor_window.ToggleOpen();
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_F12)) {
+    if (!debug_keyboard_attached && ImGui::IsKeyPressed(ImGuiKey_F12)) {
         ActionScreenshot();
     }
 
