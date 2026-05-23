@@ -1319,7 +1319,7 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     assert(min_filter < ARRAY_SIZE(pgraph_texture_min_filter_vk_map));
 
     if (is_linear_filter_supported_for_format(r, state.color_format)) {
-        vk_mag_filter = pgraph_texture_min_filter_vk_map[mag_filter];
+        vk_mag_filter = pgraph_texture_mag_filter_vk_map[mag_filter];
         vk_min_filter = pgraph_texture_min_filter_vk_map[min_filter];
     } else {
         vk_mag_filter = vk_min_filter = VK_FILTER_NEAREST;
