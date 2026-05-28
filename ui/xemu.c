@@ -853,6 +853,14 @@ static void gl_render_frame(struct xemu_console *scon)
     xemu_hud_render();
     glFinish();
 
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    xemu_snapshots_set_framebuffer_texture(0, false);
+    xemu_hud_set_framebuffer_texture(0, false);
+
+    SDL_GL_SwapWindow(scon->real_window);
+    glFinish();
+
     if (release_surface_texture) {
         xemu_main_loop_lock();
         xb_surface_gl_destroy_texture(scon->surface);
@@ -860,7 +868,6 @@ static void gl_render_frame(struct xemu_console *scon)
     }
 
     nv2a_release_framebuffer_surface();
-    SDL_GL_SwapWindow(scon->real_window);
     assert(glGetError() == GL_NO_ERROR);
 
     qatomic_set(&rendering, false);

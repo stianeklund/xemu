@@ -377,6 +377,14 @@ void nv2a_release_framebuffer_surface(void)
     PGRAPHState *pg = &d->pgraph;
     qemu_mutex_lock(&pg->renderer_lock);
     pg->framebuffer_in_use = false;
+    if (pg->surface_scale_factor_pending &&
+        pg->renderer_switch_phase == PGRAPH_RENDERER_SWITCH_PHASE_IDLE) {
+        unsigned int scale = pg->pending_surface_scale_factor;
+        pg->surface_scale_factor_pending = false;
+        if (pg->renderer->ops.set_surface_scale_factor) {
+            pg->renderer->ops.set_surface_scale_factor(d, scale);
+        }
+    }
     qemu_cond_broadcast(&pg->framebuffer_released);
     qemu_mutex_unlock(&pg->renderer_lock);
 }
@@ -387,7 +395,11 @@ void nv2a_set_surface_scale_factor(unsigned int scale)
 
     bql_unlock();
     qemu_mutex_lock(&d->pgraph.renderer_lock);
-    if (d->pgraph.renderer->ops.set_surface_scale_factor) {
+    if (d->pgraph.framebuffer_in_use ||
+        d->pgraph.renderer_switch_phase != PGRAPH_RENDERER_SWITCH_PHASE_IDLE) {
+        d->pgraph.pending_surface_scale_factor = scale;
+        d->pgraph.surface_scale_factor_pending = true;
+    } else if (d->pgraph.renderer->ops.set_surface_scale_factor) {
         d->pgraph.renderer->ops.set_surface_scale_factor(d, scale);
     }
     qemu_mutex_unlock(&d->pgraph.renderer_lock);
