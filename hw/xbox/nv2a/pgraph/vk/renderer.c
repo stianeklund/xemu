@@ -70,6 +70,10 @@ static void pgraph_vk_finalize(NV2AState *d)
 {
     PGRAPHState *pg = &d->pgraph;
 
+#if HAVE_EXTERNAL_MEMORY
+    glo_set_current(g_gl_context);
+#endif
+
     pgraph_vk_finalize_display(pg);
     pgraph_vk_finalize_compute(pg);
     pgraph_vk_finalize_reports(pg);

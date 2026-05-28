@@ -120,6 +120,7 @@ typedef struct SurfaceBinding {
 
     unsigned int width;
     unsigned int height;
+    unsigned int surface_scale_factor;
     unsigned int pitch;
     size_t size;
 
@@ -348,6 +349,11 @@ typedef struct PGRAPHVkState {
 
     VkCommandBuffer aux_command_buffer;
     bool in_aux_command_buffer;
+    const char *aux_command_buffer_file;
+    const char *aux_command_buffer_func;
+    int aux_command_buffer_line;
+    const char *aux_command_step;
+    char aux_command_detail[256];
 
     VkFramebuffer framebuffers[50];
     int framebuffer_index;
@@ -391,6 +397,7 @@ typedef struct PGRAPHVkState {
     QemuEvent downloads_complete;
     bool download_dirty_surfaces_pending;
     QemuEvent dirty_surfaces_download_complete; // common
+    bool skip_surface_download_on_flush;
 
     Lru texture_cache;
     TextureBinding *texture_cache_entries;
@@ -481,7 +488,13 @@ VkDeviceSize pgraph_vk_append_to_buffer(PGRAPHState *pg, int index, void **data,
 // command.c
 void pgraph_vk_init_command_buffers(PGRAPHState *pg);
 void pgraph_vk_finalize_command_buffers(PGRAPHState *pg);
-VkCommandBuffer pgraph_vk_begin_single_time_commands(PGRAPHState *pg);
+VkCommandBuffer pgraph_vk_begin_single_time_commands_impl(
+    PGRAPHState *pg, const char *file, int line, const char *func);
+#define pgraph_vk_begin_single_time_commands(pg) \
+    pgraph_vk_begin_single_time_commands_impl(pg, __FILE__, __LINE__, __func__)
+void pgraph_vk_note_aux_command_step(PGRAPHState *pg, const char *step,
+                                     const char *fmt, ...)
+    G_GNUC_PRINTF(3, 4);
 void pgraph_vk_end_single_time_commands(PGRAPHState *pg, VkCommandBuffer cmd);
 
 // image.c

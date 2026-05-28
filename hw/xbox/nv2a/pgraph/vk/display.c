@@ -47,6 +47,48 @@ static float pvideo_calculate_scale(unsigned int din_dout,
     return (calculated_in + 1.0f) / output_size;
 }
 
+static void clamp_display_image_dimensions(PGRAPHState *pg,
+                                           unsigned int *width,
+                                           unsigned int *height)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
+    uint32_t max_width = MIN(r->device_props.limits.maxImageDimension2D,
+                             r->device_props.limits.maxFramebufferWidth);
+    uint32_t max_height = MIN(r->device_props.limits.maxImageDimension2D,
+                              r->device_props.limits.maxFramebufferHeight);
+
+#if HAVE_EXTERNAL_MEMORY
+    const uint32_t max_external_memory_texture_size = 16384;
+    max_width = MIN(max_width, max_external_memory_texture_size);
+    max_height = MIN(max_height, max_external_memory_texture_size);
+
+    GLint gl_max_texture_size = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &gl_max_texture_size);
+    if (gl_max_texture_size > 0) {
+        max_width = MIN(max_width, (uint32_t)gl_max_texture_size);
+        max_height = MIN(max_height, (uint32_t)gl_max_texture_size);
+    }
+#endif
+
+    if (!max_width || !max_height || (*width <= max_width && *height <= max_height)) {
+        return;
+    }
+
+    double scale = MIN((double)max_width / *width, (double)max_height / *height);
+    unsigned int clamped_width = MAX(1, (unsigned int)floor(*width * scale));
+    unsigned int clamped_height = MAX(1, (unsigned int)floor(*height * scale));
+
+    fprintf(stderr,
+            "VK display image size %ux%u exceeds device limit %ux%u, "
+            "clamping to %ux%u\n",
+            *width, *height, max_width, max_height, clamped_width,
+            clamped_height);
+
+    *width = clamped_width;
+    *height = clamped_height;
+}
+
 static void destroy_pvideo_image(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -542,6 +584,9 @@ static void destroy_current_display_image(PGRAPHState *pg)
     destroy_frame_buffer(pg);
 
 #if HAVE_EXTERNAL_MEMORY
+    glFinish();
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     glDeleteTextures(1, &d->gl_texture_id);
     d->gl_texture_id = 0;
 
@@ -1083,6 +1128,7 @@ void pgraph_vk_render_display(PGRAPHState *pg)
     }
 
     pgraph_apply_scaling_factor(pg, &width, &height);
+    clamp_display_image_dimensions(pg, &width, &height);
 
     PGRAPHVkDisplayState *disp = &r->display;
     if (!disp->image || disp->width != width || disp->height != height) {

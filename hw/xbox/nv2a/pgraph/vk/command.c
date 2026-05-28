@@ -18,6 +18,7 @@
  */
 
 #include "renderer.h"
+#include <stdarg.h>
 
 static void create_command_pool(PGRAPHState *pg)
 {
@@ -70,12 +71,18 @@ static void destroy_command_buffers(PGRAPHState *pg)
     r->aux_command_buffer = VK_NULL_HANDLE;
 }
 
-VkCommandBuffer pgraph_vk_begin_single_time_commands(PGRAPHState *pg)
+VkCommandBuffer pgraph_vk_begin_single_time_commands_impl(
+    PGRAPHState *pg, const char *file, int line, const char *func)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
 
     assert(!r->in_aux_command_buffer);
     r->in_aux_command_buffer = true;
+    r->aux_command_buffer_file = file;
+    r->aux_command_buffer_line = line;
+    r->aux_command_buffer_func = func;
+    r->aux_command_step = NULL;
+    r->aux_command_detail[0] = '\0';
 
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -84,6 +91,27 @@ VkCommandBuffer pgraph_vk_begin_single_time_commands(PGRAPHState *pg)
     VK_CHECK(vkBeginCommandBuffer(r->aux_command_buffer, &begin_info));
 
     return r->aux_command_buffer;
+}
+
+void pgraph_vk_note_aux_command_step(PGRAPHState *pg, const char *step,
+                                     const char *fmt, ...)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
+    if (!r->in_aux_command_buffer) {
+        return;
+    }
+
+    r->aux_command_step = step;
+    if (fmt) {
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(r->aux_command_detail, sizeof(r->aux_command_detail), fmt,
+                  ap);
+        va_end(ap);
+    } else {
+        r->aux_command_detail[0] = '\0';
+    }
 }
 
 void pgraph_vk_end_single_time_commands(PGRAPHState *pg, VkCommandBuffer cmd)
@@ -101,9 +129,29 @@ void pgraph_vk_end_single_time_commands(PGRAPHState *pg, VkCommandBuffer cmd)
     };
     VK_CHECK(vkQueueSubmit(r->queue, 1, &submit_info, VK_NULL_HANDLE));
     nv2a_profile_inc_counter(NV2A_PROF_QUEUE_SUBMIT_AUX);
-    VK_CHECK(vkQueueWaitIdle(r->queue));
+    VkResult wait_result = vkQueueWaitIdle(r->queue);
+    if (wait_result != VK_SUCCESS) {
+        fprintf(stderr,
+                "vkQueueWaitIdle failed for aux command recorded at %s:%d "
+                "(%s)\n",
+                r->aux_command_buffer_file ? r->aux_command_buffer_file : "?",
+                r->aux_command_buffer_line,
+                r->aux_command_buffer_func ? r->aux_command_buffer_func : "?");
+        if (r->aux_command_step) {
+            fprintf(stderr, "Last aux command step: %s%s%s\n",
+                    r->aux_command_step,
+                    r->aux_command_detail[0] ? " " : "",
+                    r->aux_command_detail);
+        }
+    }
+    VK_CHECK(wait_result);
 
     r->in_aux_command_buffer = false;
+    r->aux_command_buffer_file = NULL;
+    r->aux_command_buffer_line = 0;
+    r->aux_command_buffer_func = NULL;
+    r->aux_command_step = NULL;
+    r->aux_command_detail[0] = '\0';
 }
 
 void pgraph_vk_init_command_buffers(PGRAPHState *pg)
