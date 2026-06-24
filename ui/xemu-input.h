@@ -147,6 +147,7 @@ void xemu_input_set_test_mode(int enabled);
 int xemu_input_get_test_mode(void);
 void xemu_input_reset_input_mapping(ControllerState *state);
 void xemu_input_attach_debug_keyboard(void);
+void xemu_input_detach_debug_keyboard(void);
 bool xemu_input_debug_keyboard_attached(void);
 
 #ifdef __cplusplus

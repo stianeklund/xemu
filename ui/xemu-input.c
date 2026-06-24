@@ -22,6 +22,7 @@
 #include "hw/qdev-core.h"
 #include "hw/qdev-properties.h"
 #include "qapi/error.h"
+#include "qemu/error-report.h"
 #include "monitor/qdev.h"
 #include "qobject/qdict.h"
 #include "qemu/option.h"
@@ -338,8 +339,33 @@ static char *xemu_input_get_debug_keyboard_port_path(void)
     return NULL;
 }
 
+void xemu_input_detach_debug_keyboard(void)
+{
+    if (!s_debug_keyboard_dev) {
+        return;
+    }
+
+    // Mirror the controller-hub teardown (see xemu_input_bind): the device is
+    // owned by its parent USB bus, so unplugging it is enough to release the
+    // port. s_debug_keyboard_dev is only a borrowed pointer.
+    DeviceState *dev = (DeviceState *)s_debug_keyboard_dev;
+    s_debug_keyboard_dev = NULL;
+
+    Error *err = NULL;
+    qdev_unplug(dev, &err);
+    if (err) {
+        error_report_err(err);
+    }
+}
+
 void xemu_input_attach_debug_keyboard(void)
 {
+    // Disabled via Settings -> Input. If it was previously attached, remove it.
+    if (!g_config.input.debug_keyboard) {
+        xemu_input_detach_debug_keyboard();
+        return;
+    }
+
     if (s_debug_keyboard_dev) {
         return;
     }
@@ -354,9 +380,16 @@ void xemu_input_attach_debug_keyboard(void)
     qdict_put_str(qdict, "port", port_path);
     QemuOpts *opts = qemu_opts_from_qdict(qemu_find_opts("device"), qdict,
                                            &error_abort);
-    DeviceState *dev = qdev_device_add(opts, &error_abort);
+    Error *err = NULL;
+    DeviceState *dev = qdev_device_add(opts, &err);
     if (dev) {
+        // The USB bus owns the device; keep only a borrowed pointer so a later
+        // qdev_unplug() fully releases it.
         s_debug_keyboard_dev = dev;
+        object_unref(OBJECT(dev));
+    } else if (err) {
+        // Non-fatal: a busy/unavailable port must not abort the emulator.
+        error_report_err(err);
     }
     qobject_unref(qdict);
     g_free(port_path);
@@ -713,6 +746,16 @@ void xemu_input_bind(int index, ControllerState *state, int save)
     // FIXME: Attempt to disable rumble when unbinding so it's not left
     // in rumble mode
 
+    // The debug keyboard may be squatting on the controller port we are about
+    // to (re)bind, or sitting inside a hub we are about to unplug. Detach it
+    // for the duration of this (possibly recursive) rebind and reattach it to a
+    // now-free port afterwards. Only the outermost call performs the relocate.
+    static int s_bind_depth = 0;
+    bool relocate_debug_keyboard = (s_bind_depth++ == 0);
+    if (relocate_debug_keyboard) {
+        xemu_input_detach_debug_keyboard();
+    }
+
     // Unbind existing controller
     if (bound_controllers[index]) {
         assert(bound_controllers[index]->device != NULL);
@@ -774,41 +817,83 @@ void xemu_input_bind(int index, ControllerState *state, int save)
         tmp = g_strdup_printf("1.%d", port_map[index]);
         qdict_put_str(usbhub_qdict, "port", tmp);
         qdict_put_int(usbhub_qdict, "ports", 3);
-        QemuOpts *usbhub_opts = qemu_opts_from_qdict(qemu_find_opts("device"), usbhub_qdict, &error_abort);
-        DeviceState *usbhub_dev = qdev_device_add(usbhub_opts, &error_abort);
+        QemuOpts *usbhub_opts = qemu_opts_from_qdict(
+            qemu_find_opts("device"), usbhub_qdict, &error_abort);
+        // qdev_device_add() can fail if the USB port is already in use; handle
+        // it gracefully rather than aborting the emulator (&error_abort).
+        Error *err = NULL;
+        DeviceState *usbhub_dev = qdev_device_add(usbhub_opts, &err);
         g_free(tmp);
 
-        // Create XID controller. This is connected to Port 1 of the controller's internal USB Hub
-        QDict *qdict = qdict_new();
+        DeviceState *dev = NULL;
+        if (usbhub_dev) {
+            // Create XID controller. This is connected to Port 1 of the
+            // controller's internal USB hub.
+            QDict *qdict = qdict_new();
 
-        // Specify device driver
-        qdict_put_str(qdict, "driver", bound_drivers[index]);
+            // Specify device driver
+            qdict_put_str(qdict, "driver", bound_drivers[index]);
 
-        // Specify device identifier
-        static int id_counter = 0;
-        tmp = g_strdup_printf("gamepad_%d", id_counter++);
-        qdict_put_str(qdict, "id", tmp);
-        g_free(tmp);
+            // Specify device identifier
+            static int id_counter = 0;
+            tmp = g_strdup_printf("gamepad_%d", id_counter++);
+            qdict_put_str(qdict, "id", tmp);
+            g_free(tmp);
 
-        // Specify index/port
-        qdict_put_int(qdict, "index", index);
-        tmp = g_strdup_printf("1.%d.1", port_map[index]);
-        qdict_put_str(qdict, "port", tmp);
-        g_free(tmp);
+            // Specify index/port
+            qdict_put_int(qdict, "index", index);
+            tmp = g_strdup_printf("1.%d.1", port_map[index]);
+            qdict_put_str(qdict, "port", tmp);
+            g_free(tmp);
 
-        // Create the device
-        QemuOpts *opts = qemu_opts_from_qdict(qemu_find_opts("device"), qdict, &error_abort);
-        DeviceState *dev = qdev_device_add(opts, &error_abort);
-        assert(dev);
+            // Create the device
+            QemuOpts *opts = qemu_opts_from_qdict(
+                qemu_find_opts("device"), qdict, &error_abort);
+            dev = qdev_device_add(opts, &err);
+            qobject_unref(qdict);
+            if (dev) {
+                object_unref(OBJECT(dev));
+            }
+        }
 
-        // Unref for eventual cleanup
         qobject_unref(usbhub_qdict);
-        object_unref(OBJECT(usbhub_dev));
-        qobject_unref(qdict);
-        object_unref(OBJECT(dev));
 
-        state->device = usbhub_dev;
+        if (usbhub_dev && dev) {
+            // The USB bus owns the hub; keep a borrowed pointer for unbind.
+            object_unref(OBJECT(usbhub_dev));
+            state->device = usbhub_dev;
+        } else {
+            // A USB port claim failed. Roll the binding back so we never leave
+            // a device-less entry behind (which would later assert on unbind),
+            // and notify the user instead of crashing.
+            if (usbhub_dev) {
+                Error *unplug_err = NULL;
+                qdev_unplug(usbhub_dev, &unplug_err);
+                if (unplug_err) {
+                    error_report_err(unplug_err);
+                }
+                object_unref(OBJECT(usbhub_dev));
+            }
+            if (err) {
+                error_report_err(err);
+            }
+
+            bound_controllers[index]->bound = -1;
+            bound_controllers[index] = NULL;
+
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "Failed to connect '%s' to port %d (USB port in use)",
+                     state->name ? state->name : "controller", index + 1);
+            xemu_queue_notification(msg);
+        }
     }
+
+    if (relocate_debug_keyboard) {
+        // Reattach the debug keyboard to whatever port is now free.
+        xemu_input_attach_debug_keyboard();
+    }
+    s_bind_depth--;
 }
 
 bool xemu_input_bind_xmu(int player_index, int expansion_slot_index,
@@ -859,6 +944,11 @@ bool xemu_input_bind_xmu(int player_index, int expansion_slot_index,
     }
 
     xmu->filename = g_strdup(filename);
+
+    // The debug keyboard may be parked in this expansion slot ("1.x.2"/"1.x.3")
+    // when all four controllers are bound. Detach it so the XMU can claim the
+    // port, then reattach it (it will skip this slot now that it holds an XMU).
+    xemu_input_detach_debug_keyboard();
 
     const int xmu_map[2] = { 2, 3 };
     char *tmp;
@@ -911,6 +1001,9 @@ bool xemu_input_bind_xmu(int player_index, int expansion_slot_index,
         xemu_save_peripheral_settings(player_index, expansion_slot_index,
                                       peripheral_type, xmu->filename);
     }
+
+    // Reattach the debug keyboard to a now-free port (skips this XMU slot).
+    xemu_input_attach_debug_keyboard();
 
     return true;
 }

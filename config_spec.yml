@@ -60,6 +60,12 @@ input:
     type: bool
     default: true
   background_input_capture: bool
+  # Emulate an Xbox debug keyboard (USB). Useful for debug/beta titles that
+  # expect console keyboard access. Attaches to the first free controller port
+  # and is automatically relocated as controllers are connected/disconnected.
+  debug_keyboard:
+    type: bool
+    default: false
   keyboard_controller_scancode_map:
     # Scancode reference : https://github.com/libsdl-org/SDL/blob/main/include/SDL_scancode.h
     a:

@@ -572,6 +572,11 @@ void MainMenuInputView::Draw()
     Toggle("Background controller input capture",
            &g_config.input.background_input_capture,
            "Capture even if window is unfocused (requires restart)");
+    if (Toggle("Debug keyboard", &g_config.input.debug_keyboard,
+               "Emulate an Xbox debug keyboard for debug/beta titles")) {
+        // Apply immediately: attach when enabled, detach when disabled.
+        xemu_input_attach_debug_keyboard();
+    }
 }
 
 void MainMenuInputView::Hide()
