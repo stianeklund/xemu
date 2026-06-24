@@ -786,7 +786,26 @@ static void create_surface_image(PGRAPHState *pg, SurfaceBinding *surface)
 
     unsigned int width = surface->width ? surface->width : 1;
     unsigned int height = surface->height ? surface->height : 1;
+
+    // The scratch image only needs native (unscaled) dimensions for color and
+    // D16 surfaces: on upload we copy native-res guest data into the scratch
+    // image and blit it up into the (scaled) main image; on download we blit
+    // the scaled main image back down into the scratch image at native res.
+    // Only the compute depth/stencil conversion path (D24S8/D32S8) unpacks
+    // directly to scaled dimensions in the scratch image, so that case still
+    // needs a scaled-size scratch. Allocating the scratch at scaled size for
+    // every surface wastes ~scale^2 of VRAM (e.g. 64x at 8x upscaling).
+    bool scratch_needs_scaled_size =
+        surface->host_fmt.vk_format == VK_FORMAT_D24_UNORM_S8_UINT ||
+        surface->host_fmt.vk_format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+
+    unsigned int scratch_width = width;
+    unsigned int scratch_height = height;
     pgraph_apply_scaling_factor(pg, &width, &height);
+    if (scratch_needs_scaled_size) {
+        scratch_width = width;
+        scratch_height = height;
+    }
 
     assert(!surface->image);
     assert(!surface->image_scratch);
@@ -821,7 +840,10 @@ static void create_surface_image(PGRAPHState *pg, SurfaceBinding *surface)
                             &alloc_create_info, &surface->image,
                             &surface->allocation, NULL));
 
-    VK_CHECK(vmaCreateImage(r->allocator, &image_create_info,
+    VkImageCreateInfo scratch_create_info = image_create_info;
+    scratch_create_info.extent.width = scratch_width;
+    scratch_create_info.extent.height = scratch_height;
+    VK_CHECK(vmaCreateImage(r->allocator, &scratch_create_info,
                             &alloc_create_info, &surface->image_scratch,
                             &surface->allocation_scratch, NULL));
     surface->image_scratch_current_layout = VK_IMAGE_LAYOUT_UNDEFINED;

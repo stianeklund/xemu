@@ -111,6 +111,18 @@ static void pgraph_vk_flush(NV2AState *d)
 static void pgraph_vk_sync(NV2AState *d)
 {
     PGRAPHState *pg = &d->pgraph;
+
+#if HAVE_EXTERNAL_MEMORY
+    // The display path performs GL interop work (importing/destroying the
+    // external-memory display texture in create_display_image /
+    // destroy_current_display_image, which only happens on size/scale changes).
+    // Ensure the renderer's GL interop context is current on this thread before
+    // any of those GL calls run. Without this, a scale change can issue GL
+    // teardown/import on a thread with no (or a stale) current GL context,
+    // crashing the NVIDIA GL driver (nvoglv64, error 3/7).
+    glo_set_current(g_gl_context);
+#endif
+
     pgraph_vk_render_display(pg);
 
     qatomic_set(&d->pgraph.sync_pending, false);

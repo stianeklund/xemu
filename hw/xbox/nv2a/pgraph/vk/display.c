@@ -20,6 +20,23 @@
 #include "renderer.h"
 #include <math.h>
 
+#if HAVE_EXTERNAL_MEMORY
+// Drain and report any pending GL errors at a given step. Unlike the
+// assert(glGetError() == GL_NO_ERROR) checks (which are compiled out in release
+// builds, so external-memory interop errors pass silently until the driver
+// faults), this always logs. Used to localize NVIDIA GL driver crashes
+// (nvoglv64, error 3/7) seen during display image teardown/recreate on scale
+// changes.
+static void vk_display_gl_check(const char *step)
+{
+    GLenum err;
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        fprintf(stderr, "nv2a/vk: GL error 0x%04x during display interop: %s\n",
+                err, step);
+    }
+}
+#endif
+
 static uint8_t *convert_texture_data__CR8YB8CB8YA8(uint8_t *data_out,
                                                    const uint8_t *data_in,
                                                    unsigned int width,
@@ -584,14 +601,17 @@ static void destroy_current_display_image(PGRAPHState *pg)
     destroy_frame_buffer(pg);
 
 #if HAVE_EXTERNAL_MEMORY
+    vk_display_gl_check("destroy: enter");
     glFinish();
     glBindTexture(GL_TEXTURE_2D, 0);
 
     glDeleteTextures(1, &d->gl_texture_id);
     d->gl_texture_id = 0;
+    vk_display_gl_check("destroy: glDeleteTextures");
 
     glDeleteMemoryObjectsEXT(1, &d->gl_memory_obj);
     d->gl_memory_obj = 0;
+    vk_display_gl_check("destroy: glDeleteMemoryObjectsEXT");
 
 #ifdef WIN32
     CloseHandle(d->handle);
@@ -727,7 +747,7 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
 
     glCreateMemoryObjectsEXT(1, &d->gl_memory_obj);
     glImportMemoryWin32HandleEXT(d->gl_memory_obj, memory_requirements.size, GL_HANDLE_TYPE_OPAQUE_WIN32_EXT, d->handle);
-    assert(glGetError() == GL_NO_ERROR);
+    vk_display_gl_check("create: glImportMemoryWin32HandleEXT");
 
 #else
 
@@ -756,7 +776,7 @@ static void create_display_image(PGRAPHState *pg, int width, int height)
     glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, gl_internal_format,
                          image_create_info.extent.width,
                          image_create_info.extent.height, d->gl_memory_obj, 0);
-    assert(glGetError() == GL_NO_ERROR);
+    vk_display_gl_check("create: glTexStorageMem2DEXT");
 
 #endif // HAVE_EXTERNAL_MEMORY
 

@@ -114,6 +114,90 @@ void pgraph_vk_note_aux_command_step(PGRAPHState *pg, const char *step,
     }
 }
 
+// Dump everything we can learn about a device loss at the moment we detect it.
+// The Windows Event Viewer reports these as nvlddmkm "MMU NACK" / warp
+// exceptions, which only tells us a shader touched an unmapped page. This
+// pinpoints (a) how close to the VRAM budget we were when it happened, and
+// (b) via VK_EXT_device_fault, the exact faulting GPU virtual address and
+// access type (read/write/execute), which distinguishes a residency/
+// over-subscription failure (valid-looking address, not resident) from a
+// genuine out-of-bounds logic bug (garbage address).
+static void dump_device_loss_diagnostics(PGRAPHState *pg, VkResult result)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
+    fprintf(stderr, "Device-loss diagnostics (vk_result=%d):\n", result);
+
+    VkPhysicalDeviceMemoryProperties const *mem_props = NULL;
+    vmaGetMemoryProperties(r->allocator, &mem_props);
+    if (mem_props) {
+        g_autofree VmaBudget *budgets =
+            g_malloc0_n(mem_props->memoryHeapCount, sizeof(VmaBudget));
+        vmaGetHeapBudgets(r->allocator, budgets);
+        for (uint32_t i = 0; i < mem_props->memoryHeapCount; i++) {
+            VmaBudget *b = &budgets[i];
+            bool device_local = (mem_props->memoryHeaps[i].flags &
+                                 VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+            fprintf(stderr,
+                    "  VMA heap %u%s: allocated %.1f MiB, blocks %.1f MiB, "
+                    "usage %.1f MiB / budget %.1f MiB\n",
+                    i, device_local ? " (device-local)" : "",
+                    b->statistics.allocationBytes / (1024.0 * 1024.0),
+                    b->statistics.blockBytes / (1024.0 * 1024.0),
+                    b->usage / (1024.0 * 1024.0),
+                    b->budget / (1024.0 * 1024.0));
+        }
+    }
+
+#ifdef VK_EXT_device_fault
+    if (result == VK_ERROR_DEVICE_LOST && r->device_fault_extension_enabled) {
+        VkDeviceFaultCountsEXT counts = {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT,
+        };
+        if (vkGetDeviceFaultInfoEXT(r->device, &counts, NULL) == VK_SUCCESS) {
+            g_autofree VkDeviceFaultAddressInfoEXT *addr_infos = g_malloc0_n(
+                counts.addressInfoCount + 1, sizeof(VkDeviceFaultAddressInfoEXT));
+            g_autofree VkDeviceFaultVendorInfoEXT *vendor_infos = g_malloc0_n(
+                counts.vendorInfoCount + 1, sizeof(VkDeviceFaultVendorInfoEXT));
+            VkDeviceFaultInfoEXT info = {
+                .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT,
+                .pAddressInfos = addr_infos,
+                .pVendorInfos = vendor_infos,
+            };
+            if (vkGetDeviceFaultInfoEXT(r->device, &counts, &info) ==
+                VK_SUCCESS) {
+                static const char *const addr_type_names[] = {
+                    "none",     "execute-invalid", "ip-unknown",
+                    "ip-invalid", "ip-fault",      "read-invalid",
+                    "write-invalid",
+                };
+                fprintf(stderr, "  Device fault: %s\n", info.description);
+                for (uint32_t i = 0; i < counts.addressInfoCount; i++) {
+                    VkDeviceFaultAddressInfoEXT *a = &addr_infos[i];
+                    const char *name =
+                        (size_t)a->addressType < ARRAY_SIZE(addr_type_names) ?
+                            addr_type_names[a->addressType] : "?";
+                    fprintf(stderr,
+                            "  Fault addr[%u]: %s (type=%d) addr=0x%016llx "
+                            "precision=0x%llx\n",
+                            i, name, (int)a->addressType,
+                            (unsigned long long)a->reportedAddress,
+                            (unsigned long long)a->addressPrecision);
+                }
+                for (uint32_t i = 0; i < counts.vendorInfoCount; i++) {
+                    VkDeviceFaultVendorInfoEXT *v = &vendor_infos[i];
+                    fprintf(stderr,
+                            "  Fault vendor[%u]: %s code=0x%llx data=0x%llx\n",
+                            i, v->description,
+                            (unsigned long long)v->vendorFaultCode,
+                            (unsigned long long)v->vendorFaultData);
+                }
+            }
+        }
+    }
+#endif
+}
+
 void pgraph_vk_end_single_time_commands(PGRAPHState *pg, VkCommandBuffer cmd)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -143,6 +227,7 @@ void pgraph_vk_end_single_time_commands(PGRAPHState *pg, VkCommandBuffer cmd)
                     r->aux_command_detail[0] ? " " : "",
                     r->aux_command_detail);
         }
+        dump_device_loss_diagnostics(pg, wait_result);
     }
     VK_CHECK(wait_result);
 

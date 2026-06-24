@@ -331,6 +331,14 @@ static void add_optional_device_extension_names(
     r->memory_budget_extension_enabled = add_extension_if_available(
         available_extensions, enabled_extension_names,
         VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+
+#ifdef VK_EXT_device_fault
+    // Diagnostic: lets us query the faulting GPU address/access type after a
+    // VK_ERROR_DEVICE_LOST (see dump_device_loss_diagnostics in command.c).
+    r->device_fault_extension_enabled = add_extension_if_available(
+        available_extensions, enabled_extension_names,
+        VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+#endif
 }
 
 static bool check_device_support_required_extensions(VkPhysicalDevice device)
@@ -528,6 +536,18 @@ static bool create_logical_device(PGRAPHState *pg, Error **errp)
         };
         next_struct = &custom_border_features;
     }
+
+#ifdef VK_EXT_device_fault
+    VkPhysicalDeviceFaultFeaturesEXT fault_features;
+    if (r->device_fault_extension_enabled) {
+        fault_features = (VkPhysicalDeviceFaultFeaturesEXT){
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
+            .deviceFault = VK_TRUE,
+            .pNext = next_struct,
+        };
+        next_struct = &fault_features;
+    }
+#endif
 
     VkDeviceCreateInfo device_create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
